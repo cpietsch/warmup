@@ -35,6 +35,7 @@ export default function Report({ id }: { id: string }) {
     if (!initial) return;
     const ctrl = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let waits = 0; // a busy coach is asked again a few times, not for as long as the page is open
 
     const coach = async (r: SessionRecord) => {
       if (r.coach?.source === "llm") return setPhase("done");
@@ -48,7 +49,7 @@ export default function Report({ id }: { id: string }) {
       } else {
         const quick = rulesCoach(r);
         setRec((cur) => cur && { ...cur, coach: cur.coach?.source === "llm" ? cur.coach : quick });
-        if (res.retryAfter && res.retryAfter <= 90) {
+        if (res.retryAfter && res.retryAfter <= 90 && waits++ < 3) {
           setCoachNotice(`The AI coach is busy, so these are quick notes for now. Detailed notes load in about ${res.retryAfter} seconds.`);
           retry = setTimeout(() => void coach(r), res.retryAfter * 1000 + 800);
           return; // still coaching: the detailed notes are on their way
@@ -98,15 +99,33 @@ export default function Report({ id }: { id: string }) {
     return () => cancelAnimationFrame(id);
   }, [loaded]);
 
+  // Right after a session the recording usually isn't ready yet (409), so keep asking for a while.
   const sessionId = rec?.sessionId;
-  const loadAudio = useCallback(async () => {
-    if (!sessionId) return;
-    const res = await fetch(`/api/recording/${sessionId}`, { cache: "no-store" });
-    if (res.ok) setAudioUrl((await res.json()).url);
-  }, [sessionId]);
+  const loadAudio = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!sessionId) return;
+      for (let i = 0; i < 12 && !signal?.aborted; i++) {
+        const res = await fetch(`/api/recording/${sessionId}`, { cache: "no-store", signal }).catch(() => null);
+        if (res?.ok) return setAudioUrl((await res.json()).url);
+        if (res?.status !== 409) return;
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+    },
+    [sessionId],
+  );
   useEffect(() => {
-    void loadAudio();
+    const ctrl = new AbortController();
+    void loadAudio(ctrl.signal);
+    return () => ctrl.abort();
   }, [loadAudio]);
+  // The recording's URL expires, so a failed load fetches a fresh one, but at most every 30 s:
+  // a recording that can't play at all would otherwise ask again and again.
+  const audioRetried = useRef(0);
+  const onAudioError = () => {
+    if (Date.now() - audioRetried.current < 30_000) return;
+    audioRetried.current = Date.now();
+    void loadAudio();
+  };
 
   // Every play button toggles: play from its spot, or pause if that spot is already playing.
   // Only playing, pausing and seeking change this; the chart's playhead follows the audio by itself,
@@ -427,7 +446,7 @@ export default function Report({ id }: { id: string }) {
           {audioUrl && (
             <div className="player">
               <span className="player__label">Recording</span>
-              <audio ref={audioRef} controls preload="metadata" src={audioUrl} onError={() => void loadAudio()} {...audioEvents} />
+              <audio ref={audioRef} controls preload="metadata" src={audioUrl} onError={onAudioError} {...audioEvents} />
             </div>
           )}
         </div>

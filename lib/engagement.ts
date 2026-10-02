@@ -52,8 +52,12 @@ export function sharedTopic(a: string, b: string): string | null {
   return null;
 }
 
-const QUESTION_START = /^(so |and |but |oh |wait |okay |ok )?(what|how|why|where|when|who|which|do|does|did|are|is|was|were|have|has|can|could|would|will|should|any|anything)\b/i;
-export const isQuestion = (text: string) => /\?/.test(text) || QUESTION_START.test(text.trim());
+const QUESTION_START = /^((so|and|but|oh|wait|okay|ok|well|yeah|hey)[,\s]+)?(what|how|why|where|when|who|which|do|does|did|are|is|was|were|have|has|can|could|would|will|should|any|anything|got any)\b/i;
+// Questions tacked on at the end, which speech recognition often leaves without a question mark.
+const TAG_QUESTION = /(\b(how|what) about (you|yours|yourself)|\band (you|yourself)|,\s*you)\W*$/i;
+/** A turn merges several sentences, and the question is often the last one: check each. */
+export const isQuestion = (text: string) =>
+  /\?/.test(text) || TAG_QUESTION.test(text.trim()) || text.split(/[.!;]+/).some((s) => QUESTION_START.test(s.trim()));
 
 /** Goodbyes: "nice meeting you" closes a conversation, "nice to meet you" opens one. */
 export const FAREWELL =
@@ -120,13 +124,16 @@ export interface GoalContext {
   answers: number;
 }
 
+/** Curly apostrophes (common in the persona's text) would break patterns like `i'?m`. */
+const plain = (l: string) => l.replace(/[’‘]/g, "'");
+
 export function checkGoal(goal: Goal, c: GoalContext): boolean {
   const g = goal.check;
   switch (g.kind) {
     case "regex":
-      return (g.who === "you" ? c.you : c.them).some((l) => g.re.test(l));
+      return (g.who === "you" ? c.you : c.them).some((l) => g.re.test(plain(l)));
     case "words":
-      return (g.who === "you" ? c.you : c.them).some((l) => words(l).length >= g.min && (!g.re || g.re.test(l)));
+      return (g.who === "you" ? c.you : c.them).some((l) => words(plain(l)).length >= g.min && (!g.re || g.re.test(plain(l))));
     case "question":
       return c.you.some(isQuestion);
     case "followup":

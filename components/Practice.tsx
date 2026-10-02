@@ -2,7 +2,6 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Emoji from "./Emoji";
 import GoalList from "./GoalList";
@@ -19,7 +18,6 @@ const noSnap = () => null;
 
 export default function Practice({ sceneId }: { sceneId: string }) {
   const scene = sceneById(sceneId)!;
-  const router = useRouter();
   const [personaIdx, setPersonaIdx] = useState(0);
   const [hints, setHints] = useState(scene.level <= 2);
   const [conv, setConv] = useState<Conversation | null>(null);
@@ -38,10 +36,13 @@ export default function Practice({ sceneId }: { sceneId: string }) {
     setPersonaIdx(Math.max(0, scene.personas.findIndex((p) => p.name === rec.personaName)));
   }, [scene]);
 
+  // A full page load, not a client-side navigation: that one needs a server round trip nothing
+  // prefetched (the report's id only exists now), which Vercel's firewall or a new deployment can
+  // fail, leaving an error page that only a reload fixed. The report reads everything from storage.
   useEffect(() => {
     if (state?.status === "ended" && state.recordId)
-      router.push(retake ? `/report/${state.recordId}#moment-${retake.momentIndex}` : `/report/${state.recordId}`, { scroll: !retake });
-  }, [state?.status, state?.recordId, router, retake]);
+      window.location.assign(retake ? `/report/${state.recordId}#moment-${retake.momentIndex}` : `/report/${state.recordId}`);
+  }, [state?.status, state?.recordId, retake]);
 
   // Leaving the page mid-session ends it cleanly (and saves what happened).
   useEffect(
@@ -319,7 +320,7 @@ function Room({ conv, state, hints, setHints }: { conv: Conversation; state: Liv
   const lastThem = [...state.lines].reverse().find((l) => l.who === "them");
   const lastYou = [...state.lines].reverse().find((l) => l.who === "you");
   const youAfterThem = lastYou && lastThem ? state.lines.indexOf(lastYou) > state.lines.indexOf(lastThem) : !!lastYou;
-  const ending = state.status === "ending";
+  const ending = state.status === "ending" || state.status === "ended"; // "ended" shows until the report opens
 
   // The captions have a fixed height, so the room doesn't jump as words arrive. When a long reply
   // doesn't fit, keep the newest words in view and fade the oldest out at the top, like subtitles.

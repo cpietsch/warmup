@@ -95,6 +95,8 @@ export class Conversation {
   private replyStartAt = 0;
   private replyCount = 0;
   private captionQueue: { word: string; at: number }[] = [];
+  /** Finished replies whose caption settles when their playback ends, with their final text. */
+  private settling = new Map<string, string>();
   private earlyDeltas: { word: string; ms: number | null }[] = [];
 
   // flow control
@@ -107,6 +109,7 @@ export class Conversation {
   private afterReply: (() => void) | null = null; // runs once the reply being spoken finishes
   private endOnNextReply: Outcome | null = null;
   private endAt: number | null = null;
+  private endDeadline = 0; // ends even if the user is still talking, so a stray partial can't keep it open
   private endOutcome: Outcome = "wrapped-up";
   private leaveAsked = false;
   private wrapAsked = false;
@@ -245,6 +248,9 @@ export class Conversation {
 
   private async finish(outcome: Outcome, error?: string) {
     if (this.state.status !== "live" && this.state.status !== "connecting") return;
+    // Score what's already been said first, so the room shows the final goals while it wraps up.
+    this.settleReplies();
+    this.updateGoals(this.muteAgent ? "" : this.pendingYou);
     this.set({ status: "ending" });
     await this.agent.end().catch(() => {});
     await this.teardown();
@@ -298,6 +304,8 @@ export class Conversation {
       case "transcript.user":
         this.upsertLine(ev.item_id, "you", ev.text, true, now);
         this.pendingYou = `${this.pendingYou} ${ev.text}`.trim();
+        // Tick goals as soon as the words are final. The turn itself is scored once the reply starts.
+        if (!this.muteAgent && !this.dropPendingYou) this.updateGoals(this.pendingYou);
         if (this.state.phase === "talk" && this.muteAgent) {
           const fillers = (ev.text.match(FILLER) ?? []).length;
           if (fillers) this.nudgeWarmth(-2 * fillers);
@@ -386,9 +394,11 @@ export class Conversation {
       const history = [...this.earlierYou, ...this.youTurns];
       this.lastThem = final;
       this.replyLine = null;
+      this.settling.set(line.id, final);
       // Keep the caption in step with the voice: settle it when playback ends.
       setTimeout(
         () => {
+          this.settling.delete(line.id);
           this.captionQueue = [];
           this.replaceLine(line.id, { text: final, final: true });
           this.updateGoals();
@@ -412,6 +422,7 @@ export class Conversation {
   private scheduleEnd(outcome: Outcome, delayMs: number) {
     this.endOutcome = outcome;
     this.endAt = performance.now() + delayMs;
+    this.endDeadline = this.endAt + 8000;
   }
 
   /** A user turn is complete once the persona starts answering it. */
@@ -465,9 +476,12 @@ export class Conversation {
     if (warmth !== this.state.warmth) this.set({ warmth, mood: moodFor(warmth) });
   }
 
-  private updateGoals() {
+  /** `pending`: the user's words not yet answered, which count for goals before the turn is scored. */
+  private updateGoals(pending = "") {
     const them = this.state.lines.filter((l) => l.who === "them" && l.final).map((l) => l.text);
-    const ctx = { you: this.youTurns, them, pairs: this.pairs, ...this.goalCtx };
+    const you = pending ? [...this.youTurns, pending] : this.youTurns;
+    const pairs = pending ? [...this.pairs, { them: this.lastThem, you: pending }] : this.pairs;
+    const ctx = { you, them, pairs, ...this.goalCtx };
     const goals = { ...this.state.goals };
     let changed = false;
     for (const g of this.scene.goals) {
@@ -496,6 +510,9 @@ export class Conversation {
     if (this.state.phase === "talk" && this.muteAgent && this.talkStartedAt !== null) {
       const left = Math.max(0, TALK_SECONDS - Math.floor(now - this.talkStartedAt));
       patch.talkLeft = left;
+      // Kept current, so "talk for 60 seconds" ticks live and still counts if the session ends mid-talk.
+      this.goalCtx.talkSeconds = Math.round(now - this.talkStartedAt);
+      this.updateGoals();
       // Audience attention sags during long silences and recovers while you speak.
       if (this.silenceSince !== null && now - this.silenceSince > 3) this.nudgeWarmth(-0.5);
       else if (this.state.speaking === "you" && this.state.warmth < 85) this.nudgeWarmth(0.1);
@@ -522,7 +539,9 @@ export class Conversation {
       this.endOnNextReply = "time-up";
       this.agent.reply("You need to go now. Wrap up naturally in one short sentence and say goodbye.");
     }
-    if (this.endAt !== null && performance.now() >= this.endAt && !(this.player?.isPlaying() ?? false)) {
+    // Don't cut off the user's own goodbye: wait while they're still talking.
+    const userTalking = this.state.speaking === "you" || this.state.lines.some((l) => l.who === "you" && !l.final);
+    if (this.endAt !== null && performance.now() >= this.endAt && !(this.player?.isPlaying() ?? false) && (!userTalking || performance.now() >= this.endDeadline)) {
       this.endAt = null;
       void this.finish(this.endOutcome);
       return;
@@ -534,11 +553,20 @@ export class Conversation {
     if (!this.replyLine || !this.captionQueue.length) return;
     const t = performance.now();
     let text = this.replyLine.text;
-    while (this.captionQueue.length && this.captionQueue[0].at <= t) {
-      const w = this.captionQueue.shift()!.word;
-      text = text ? `${text}${/^[,.!?;:'’]/.test(w) ? "" : " "}${w}` : w;
-    }
+    while (this.captionQueue.length && this.captionQueue[0].at <= t) text = appendWord(text, this.captionQueue.shift()!.word);
     if (text !== this.replyLine.text) this.replaceLine(this.replyLine.id, { text });
+  }
+
+  /** Ending mid-reply: show and count the persona's lines in full, as the recording has them. */
+  private settleReplies() {
+    const settle = new Map(this.settling);
+    if (this.replyLine) settle.set(this.replyLine.id, this.replyFinal ?? this.captionQueue.reduce((t, q) => appendWord(t, q.word), this.replyLine.text));
+    this.settling.clear();
+    this.captionQueue = [];
+    if (!settle.size) return;
+    if (this.replyLine) this.replyLine = { ...this.replyLine, text: settle.get(this.replyLine.id)!, final: true };
+    this.set({ lines: this.state.lines.map((l) => (settle.has(l.id) ? { ...l, text: settle.get(l.id)!, final: true } : l)) });
+    this.updateGoals();
   }
 
   // ---------- lines ----------
@@ -593,6 +621,8 @@ function scoreAnswer(text: string, question: string): Signal[] {
   if (fillers >= 2) out.push({ label: "Filler words", delta: -Math.min(3, fillers) });
   return out;
 }
+
+const appendWord = (text: string, w: string) => (text ? `${text}${/^[,.!?;:'’]/.test(w) ? "" : " "}${w}` : w);
 
 const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
 

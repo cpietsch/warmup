@@ -1,5 +1,6 @@
 // Scene definitions: who you talk to, where, what you're practicing, and how the persona is prompted.
 // Voices were matched to personas by measured pitch (scripts/voice-pitch.mjs).
+import { FAREWELL } from "./engagement";
 
 export type Voice = "eve" | "jane" | "anna" | "mary" | "vera" | "michael" | "jean" | "paul" | "george" | "charles";
 
@@ -117,10 +118,14 @@ export const MOODS: Mood[] = [
 export const moodFor = (warmth: number): Mood => [...MOODS].reverse().find((m) => warmth >= m.min) ?? MOODS[0];
 
 // Shared detectors
+// Spoken forms as speech recognition writes them, commas included ("Me, too.").
 const COMMON_GROUND =
-  /\b(me too|me neither|neither do i|same here|same with me|so do i|we both|both of us|i also|no way|i('m| am) (also )?(really )?into|i used to|i('ve| have) (been|done|tried) that)\b|\bi\b[^.?!]{0,50}\b(too|as well)\b/i;
-const EXIT =
-  /\b((nice|good|great|lovely) (meeting|talking|chatting)( to| with)? you|(gonna|going to|should|need to|have to|got to|gotta) (go|grab|get|head|find|say hi|check|run)|catch you (later|around)|see you (around|later)|talk (to you )?(later|soon)|enjoy the (party|rest|evening|night))\b/i;
+  /\b(me,? too|me,? neither|me as well|mine,? too|us,? too|neither do i|same here|same with me|same for me|so (do|am|have|did) i|likewise|we both|both of us|in common|i know the feeling|(i have|i've got|i had) the same|i('m| am) the same|i('m|'ve|'d| was| am| have| had)? also|no way|i('m| am) (also )?(really )?into|i used to|i('ve| have) (been|done|tried) that)\b|^\W*((oh|yeah|ha|haha)\W+)?same\b|\bi\b[^.?!]{0,60}\b(too|as well)\b/i;
+// Every goodbye that can end the session (FAREWELL) also counts as leaving gracefully.
+const EXIT = new RegExp(
+  `${FAREWELL.source}|\\b(((i'?m |i am )?(gonna|going to|wanna|want to|should|need to|have to|got to|gotta)|i'?ll|let me)( probably| just| quickly| actually)? (go|get going|grab|get|head|find|mingle|say hi|check|run)|(i'?m |i am )?heading (out|off)|leave you to it|let you (go|get back)|see (you|ya)|enjoy (the|your) (party|rest|evening|night))\\b`,
+  "i",
+);
 
 export const SCENES: Scene[] = [
   {
@@ -215,7 +220,7 @@ export const SCENES: Scene[] = [
       "Hi. I think I've eaten half this bowl already. How do you know Maya?",
     ],
     goals: [
-      { id: "name", label: "Learn her name", check: { kind: "regex", who: "them", re: /\b(i'?m|name'?s|call me)\s+sam\b/i } },
+      { id: "name", label: "Learn her name", check: { kind: "regex", who: "them", re: /\b(i'?m|i am|name'?s|name is|it'?s|call me)\s+sam\b|^\W*sam\b/i } },
       { id: "common", label: "Find something in common", check: { kind: "regex", who: "you", re: COMMON_GROUND } },
       { id: "exit", label: "Leave the conversation gracefully", check: { kind: "regex", who: "you", re: EXIT } },
     ],
@@ -250,7 +255,7 @@ export const SCENES: Scene[] = [
     goals: [
       { id: "work", label: "Find out what he actually works on", check: { kind: "regex", who: "you", re: /\b(work(ing)? on|what do you do|your (job|role|company|team|work)|what brings you|what line of work)\b/i } },
       { id: "open", label: "Get him to open up with a longer answer", check: { kind: "words", who: "them", min: 18 } },
-      { id: "follow", label: "Leave with a way to follow up", check: { kind: "regex", who: "you", re: /\b(linkedin|email|card|number|connect|keep in touch|follow up|coffee sometime|reach out|send you)\b/i } },
+      { id: "follow", label: "Leave with a way to follow up", check: { kind: "regex", who: "you", re: /\b(linkedin|e-?mail|cards?|numbers?|contacts?|connect|(keep|stay) in (touch|contact)|follow up|(grab|get) (a )?coffee|coffee sometime|reach out|send you|message you|text you|swap|exchange)\b/i } },
     ],
     tips: ["Short answers aren't rejection. He's just not warmed up yet.", "Specific questions beat general ones."],
     profile: { baseline: 32, gain: 0.9, loss: 1.2 },
@@ -340,7 +345,7 @@ export const SCENES: Scene[] = [
     goals: [
       { id: "going", label: "Keep the conversation going", check: { kind: "turns", min: 4 } },
       { id: "common", label: "Find a shared interest", check: { kind: "regex", who: "you", re: COMMON_GROUND } },
-      { id: "ask", label: "Ask them out clearly", check: { kind: "regex", who: "you", re: /\b(would you (like|want) to|do you want to|want to (grab|get)|can i (get|have) your (number|instagram|insta)|go out|get (a )?(drink|coffee|dinner|lunch) (sometime|together|with me)|see you again|exchange numbers)\b/i } },
+      { id: "ask", label: "Ask them out clearly", check: { kind: "regex", who: "you", re: /\b((would|do) you (maybe )?(like|want|wanna) to (grab|get|go|hang|see|meet|have)|(wanna|want to) (grab|get|go|hang|see|meet|have)|(can|could|may) i (get|have) your (number|insta(gram)?)|(can|could|may) i take you|take you (out|to)|up for (a )?(coffee|drink|dinner|lunch)|how about (we|a|coffee|dinner|drinks?)|let'?s (grab|get|go)|hang out|are you free|go out|get (a )?(drink|coffee|dinner|lunch) (sometime|together|with me)|see you again|(exchange|swap) numbers)\b/i } },
     ],
     tips: ["Asking someone out is just a clear question. Keep it simple.", "They can say no. The skill is asking kindly and handling either answer."],
     profile: { baseline: 52, gain: 1, loss: 1 },
